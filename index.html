@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="AR Video Trigger" />
+  <meta name="theme-color" content="#0a7f60" />
+  <title>WebAR: фото → YouTube</title>
+
+  <!-- OpenCV.js потрібен для розпізнавання фото в браузері.
+       Для Safari/iPad сторінка має бути відкрита через HTTPS або localhost. -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoaded()"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #0b0f12;
+      color: white;
+      overflow: hidden;
+    }
+    #app {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #111;
+    }
+    #panel {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: calc(12px + env(safe-area-inset-bottom));
+      padding: 14px 16px;
+      background: rgba(0,0,0,.68);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 18px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.35);
+    }
+    #title {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0 0 6px;
+    }
+    #status {
+      margin: 0 0 12px;
+      line-height: 1.35;
+      font-size: 14px;
+      color: rgba(255,255,255,.86);
+    }
+    button, a.button {
+      display: inline-block;
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      margin: 0 8px 8px 0;
+      background: #12a77f;
+      color: white;
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 15px;
+    }
+    button.secondary, a.secondary {
+      background: rgba(255,255,255,.16);
+    }
+    #debug {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: rgba(255,255,255,.68);
+      margin-top: 6px;
+      white-space: pre-wrap;
+    }
+    #targetPreview {
+      position: fixed;
+      top: calc(12px + env(safe-area-inset-top));
+      right: 12px;
+      width: 92px;
+      border: 2px solid rgba(255,255,255,.75);
+      border-radius: 10px;
+      box-shadow: 0 6px 22px rgba(0,0,0,.35);
+      opacity: .95;
+    }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <video id="camera" playsinline muted></video>
+  </div>
+
+  <img id="targetPreview" src="assets/target1.jpg" alt="Цільове фото для розпізнавання" />
+
+  <div id="panel">
+    <p id="title">WebAR-сканер: фото → YouTube</p>
+    <p id="status">Натисніть «Почати», дозвольте камеру і наведіть iPad на надруковане або відкрите на екрані цільове фото.</p>
+    <button id="startBtn">Почати сканування</button>
+    <button class="secondary" id="resetBtn">Скинути</button>
+    <a class="button secondary" href="https://www.youtube.com/watch?v=-QZqMT6W9ZQ">Відкрити відео вручну</a>
+    <div id="debug">OpenCV: завантаження…</div>
+  </div>
+
+  <canvas id="frameCanvas"></canvas>
+  <img id="targetImage" src="assets/target.jpg" alt="" crossorigin="anonymous" style="display:none" />
+
+<script>
+  const YOUTUBE_URL = "https://www.youtube.com/watch?v=-QZqMT6W9ZQ";
+
+  // Порогові значення для демонстраційного розпізнавання.
+  // Якщо Safari відкриває YouTube занадто рано — підніміть MIN_SCORE до 0.68–0.75.
+  // Якщо фото не розпізнається — зменшіть MIN_SCORE до 0.50–0.55.
+  const MIN_SCORE = 0.50;
+  const REQUIRED_HITS = 1;       // скільки послідовних збігів потрібно перед переходом
+  const CHECK_EVERY_MS = 700;    // інтервал аналізу кадрів
+
+  const video = document.getElementById("camera");
+  const startBtn = document.getElementById("startBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const statusEl = document.getElementById("status");
+  const debugEl = document.getElementById("debug");
+  const canvas = document.getElementById("frameCanvas");
+  const targetImage = document.getElementById("targetImage");
+
+  let cvReady = false;
+  let stream = null;
+  let timer = null;
+  let targetMat = null;
+  let hitCount = 0;
+  let redirected = false;
+
+  function onOpenCvLoaded() {
+    cv["onRuntimeInitialized"] = () => {
+      cvReady = true;
+      debugEl.textContent = "OpenCV: готово";
+      prepareTarget();
+    };
+  }
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function setDebug(text) {
+    debugEl.textContent = text;
+  }
+
+  function prepareTarget() {
+    if (!cvReady || !targetImage.complete) return;
+    try {
+      const src = cv.imread(targetImage);
+      targetMat = preprocessForTemplate(src, 128); // еталон у фіксованій ширині
+      src.delete();
+      setDebug("OpenCV: готово\nЕталон: " + targetMat.cols + "×" + targetMat.rows);
+    } catch (e) {
+      setDebug("Помилка підготовки еталона: " + e.message);
+    }
+  }
+
+  targetImage.onload = prepareTarget;
+
+  function preprocessForTemplate(src, width) {
+    // Перетворення у grayscale + CLAHE/вирівнювання контрасту.
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    const resized = new cv.Mat();
+    const ratio = width / gray.cols;
+    const height = Math.max(1, Math.round(gray.rows * ratio));
+    cv.resize(gray, resized, new cv.Size(width, height), 0, 0, cv.INTER_AREA);
+
+    const equalized = new cv.Mat();
+    cv.equalizeHist(resized, equalized);
+
+    gray.delete();
+    resized.delete();
+    return equalized;
+  }
+
+  async function startCamera() {
+    if (!cvReady) {
+      setStatus("OpenCV ще завантажується. Зачекайте кілька секунд і натисніть «Почати» ще раз.");
+      return;
+    }
+    if (!targetMat) prepareTarget();
+    if (!targetMat) {
+      setStatus("Не вдалося підготувати еталонне фото.");
+      return;
+    }
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+
+      video.srcObject = stream;
+      await video.play();
+
+      hitCount = 0;
+      redirected = false;
+      setStatus("Камера активна. Наведіть iPad на цільове фото. Після впізнавання відкриється YouTube.");
+      startRecognitionLoop();
+
+    } catch (e) {
+      setStatus("Safari не надав доступ до камери або сторінка відкрита не через HTTPS. Відкрийте сайт через HTTPS і дозвольте камеру.");
+      setDebug("Camera error: " + e.message);
+    }
+  }
+
+  function startRecognitionLoop() {
+    if (timer) clearInterval(timer);
+    timer = setInterval(analyzeFrame, CHECK_EVERY_MS);
+  }
+
+  function stopRecognitionLoop() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  function analyzeFrame() {
+    if (redirected || !video.videoWidth || !targetMat) return;
+
+    const maxW = 360;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const ratio = maxW / vw;
+    canvas.width = maxW;
+    canvas.height = Math.round(vh * ratio);
+
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    let frame = null, frameGray = null, frameEq = null;
+    try {
+      frame = cv.imread(canvas);
+      frameGray = new cv.Mat();
+      cv.cvtColor(frame, frameGray, cv.COLOR_RGBA2GRAY);
+      frameEq = new cv.Mat();
+      cv.equalizeHist(frameGray, frameEq);
+
+      const score = multiScaleTemplateScore(frameEq, targetMat);
+      const rounded = Math.round(score * 1000) / 1000;
+
+      if (score >= MIN_SCORE) {
+        hitCount += 1;
+        setDebug("Збіг: " + rounded + "\nПідтвердження: " + hitCount + "/" + REQUIRED_HITS);
+      } else {
+        hitCount = Math.max(0, hitCount - 1);
+        setDebug("Збіг: " + rounded + "\nШукаю фото…");
+      }
+
+      if (hitCount >= REQUIRED_HITS) {
+        redirected = true;
+        stopRecognitionLoop();
+        setStatus("Фото розпізнано. Відкриваю відео…");
+        // Перехід у цій самій вкладці Safari — не popup, тому зазвичай не блокується.
+        window.location.href = YOUTUBE_URL;
+      }
+    } catch (e) {
+      setDebug("Recognition error: " + e.message);
+    } finally {
+      if (frame) frame.delete();
+      if (frameGray) frameGray.delete();
+      if (frameEq) frameEq.delete();
+    }
+  }
+
+  function multiScaleTemplateScore(frameGray, tpl) {
+    // Демонстраційний пошук еталона на кількох масштабах.
+    // Добре працює, коли iPad спрямовано приблизно прямо на фото.
+    const scales = [0.55, 0.65, 0.75, 0.85, 1.0, 1.15, 1.30, 1.50, 1.75];
+    let best = -1;
+
+    for (const s of scales) {
+      const w = Math.round(tpl.cols * s);
+      const h = Math.round(tpl.rows * s);
+
+      if (w < 24 || h < 24 || w >= frameGray.cols || h >= frameGray.rows) continue;
+
+      const tplScaled = new cv.Mat();
+      cv.resize(tpl, tplScaled, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+
+      const resultCols = frameGray.cols - tplScaled.cols + 1;
+      const resultRows = frameGray.rows - tplScaled.rows + 1;
+      const result = new cv.Mat(resultRows, resultCols, cv.CV_32FC1);
+
+      cv.matchTemplate(frameGray, tplScaled, result, cv.TM_CCOEFF_NORMED);
+      const mm = cv.minMaxLoc(result);
+      if (mm.maxVal > best) best = mm.maxVal;
+
+      tplScaled.delete();
+      result.delete();
+    }
+    return best;
+  }
+
+  function resetAll() {
+    redirected = false;
+    hitCount = 0;
+    setStatus("Скинуто. Натисніть «Почати» і наведіть iPad на фото.");
+    setDebug(cvReady ? "OpenCV: готово" : "OpenCV: завантаження…");
+  }
+
+  startBtn.addEventListener("click", startCamera);
+  resetBtn.addEventListener("click", resetAll);
+
+  window.addEventListener("pagehide", () => {
+    stopRecognitionLoop();
+    if (stream) {
+      for (const track of stream.getTracks()) track.stop();
+    }
+  });
+</script>
+</body>
+</html>

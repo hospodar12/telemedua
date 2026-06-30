@@ -1,0 +1,9 @@
+{
+  "name": "WebAR Photo to YouTube",
+  "short_name": "AR Video",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0b0f12",
+  "theme_color": "#0a7f60",
+  "icons": []
+}
