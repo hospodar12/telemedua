@@ -111,7 +111,8 @@
   <img id="targetImage" src="assets/target.jpg" alt="" crossorigin="anonymous" style="display:none" />
 
 <script>
-  const YOUTUBE_URL = "https://youtu.be/ziFje3SETYI";
+  //const YOUTUBE_URL = "https://youtu.be/ziFje3SETYI";
+  const VIDEO_URL = "https://hospodar12.github.io/telemedua/video/apple-small.mp4";
 
   // Порогові значення для демонстраційного розпізнавання.
   // Якщо Safari відкриває YouTube занадто рано — підніміть MIN_SCORE до 0.68–0.75.
@@ -265,7 +266,7 @@
         stopRecognitionLoop();
         setStatus("Фото розпізнано. Відкриваю відео…");
         // Перехід у цій самій вкладці Safari — не popup, тому зазвичай не блокується.
-        window.location.href = YOUTUBE_URL;
+        window.location.href = VIDEO_URL;
       }
     } catch (e) {
       setDebug("Recognition error: " + e.message);
